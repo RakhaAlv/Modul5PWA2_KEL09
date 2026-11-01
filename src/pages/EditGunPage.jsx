@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import {
   ArrowLeft,
   Upload,
@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 import gunService from '../services/gunService'
 import uploadService from '../services/uploadService'
+import productImageService from '../services/productImageService'
 import {
   saveDraft,
   loadDraft,
@@ -53,6 +54,51 @@ export default function EditGunPage({ gun, gunId, onBack, onSuccess }) {
   // Specs & Steps
   const [specs, setSpecs] = useState([{ name: '', quantity: '' }])
   const [steps, setSteps] = useState([''])
+
+  // Extra gallery images (beyond the primary image)
+  const [gallery, setGallery] = useState([])
+  const [newGalleryFiles, setNewGalleryFiles] = useState([])
+  const [galleryUploading, setGalleryUploading] = useState(false)
+
+  const loadGallery = useCallback(async () => {
+    if (!targetId) return
+    const res = await productImageService.getImages(targetId)
+    if (res.success) setGallery(res.data)
+  }, [targetId])
+
+  useEffect(() => { loadGallery() }, [loadGallery])
+
+  const handleNewGalleryFiles = (e) => {
+    setNewGalleryFiles((prev) => [...prev, ...Array.from(e.target.files || [])])
+  }
+
+  const removeNewGalleryFile = (idx) => {
+    setNewGalleryFiles((prev) => prev.filter((_, i) => i !== idx))
+  }
+
+  const uploadNewGalleryImages = async () => {
+    if (newGalleryFiles.length === 0) return
+    try {
+      setGalleryUploading(true)
+      const urls = await uploadService.uploadImages(newGalleryFiles)
+      if (urls.length > 0) await productImageService.addImages(targetId, urls)
+      setNewGalleryFiles([])
+      await loadGallery()
+    } catch (err) {
+      setError(err.message || 'Failed to upload gallery images.')
+    } finally {
+      setGalleryUploading(false)
+    }
+  }
+
+  const removeGalleryImage = async (imageId) => {
+    try {
+      await productImageService.deleteImage(imageId)
+      setGallery((prev) => prev.filter((g) => g.id !== imageId))
+    } catch {
+      /* best-effort */
+    }
+  }
 
   // Draft modal
   const [showDraftModal, setShowDraftModal] = useState(() => (targetId ? hasDraft(targetId) : false))
@@ -385,6 +431,60 @@ export default function EditGunPage({ gun, gunId, onBack, onSuccess }) {
                 </button>
               )}
             </div>
+          </div>
+        </div>
+
+        {/* Gallery images */}
+        <div className="card-box">
+          <h2 className="card-box-title">Gallery (Additional Images)</h2>
+          {gallery.length > 0 && (
+            <div className="extra-image-grid">
+              {gallery.map((img) => (
+                <div key={img.id} className="extra-image-thumb">
+                  <img src={img.image_url} alt="Gallery item" loading="lazy" />
+                  <button type="button" className="preview-remove-btn" onClick={() => removeGalleryImage(img.id)}>
+                    <X size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {newGalleryFiles.length > 0 && (
+            <div className="extra-image-grid">
+              {newGalleryFiles.map((file, i) => (
+                <div key={file.name + i} className="extra-image-thumb">
+                  <img src={URL.createObjectURL(file)} alt={file.name} />
+                  <button type="button" className="preview-remove-btn" onClick={() => removeNewGalleryFile(i)}>
+                    <X size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="edit-img-controls">
+            <input
+              id="edit-gallery-input"
+              type="file"
+              accept="image/jpeg,image/jpg,image/png,image/webp"
+              multiple
+              onChange={handleNewGalleryFiles}
+              className="hidden-file-input"
+            />
+            <label htmlFor="edit-gallery-input" className="btn btn--outline btn--sm">
+              <Plus size={14} /> Add Images
+            </label>
+            {newGalleryFiles.length > 0 && (
+              <button
+                type="button"
+                className="btn btn--primary btn--sm"
+                onClick={uploadNewGalleryImages}
+                disabled={galleryUploading}
+              >
+                {galleryUploading ? <Loader size={14} className="spin" /> : 'Upload to Gallery'}
+              </button>
+            )}
           </div>
         </div>
 

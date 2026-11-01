@@ -1,7 +1,8 @@
 import { apiClient, IS_SUPABASE } from '../config/api'
 
 // ---------------------------------------------------------------------------
-// ReviewService — product reviews & ratings.
+// ReviewService — product reviews & ratings, plus thumbs up/down votes on
+// reviews (public.review_votes).
 // Supports both Supabase (public.reviews) and university API (/api/v1/recipes/:id/reviews).
 // ---------------------------------------------------------------------------
 
@@ -18,6 +19,7 @@ class ReviewService {
         ? data.map((r) => ({
             id: r.id,
             product_id: r.product_id,
+            user_id: r.user_id,
             user_identifier: r.user_id ? `Operator ${String(r.user_id).substring(0, 8)}` : 'Anonymous',
             rating: r.rating,
             comment: r.comment || '',
@@ -84,6 +86,67 @@ class ReviewService {
     }
 
     return apiClient.delete(`/api/v1/reviews/${reviewId}`)
+  }
+
+  // -------------------------------------------------------------------------
+  // Review votes (thumbs up / thumbs down)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Fetch all votes for a set of review ids, in one request.
+   * @param {Array<string|number>} reviewIds
+   * @returns {Promise<{success:boolean, data: Array<{review_id, user_id, vote}>}>}
+   */
+  async getVotesForReviews(reviewIds) {
+    if (!IS_SUPABASE || !reviewIds || reviewIds.length === 0) {
+      return { success: true, data: [] }
+    }
+    const idsList = reviewIds.join(',')
+    const data = await apiClient.get(
+      `/rest/v1/review_votes?review_id=in.(${idsList})&select=*`,
+    )
+    return { success: true, data: Array.isArray(data) ? data : [] }
+  }
+
+  /**
+   * Cast or change this user's vote on a review. Passing the same vote again
+   * removes it (toggle off).
+   * @param {string|number} reviewId
+   * @param {string} userId
+   * @param {1|-1} vote
+   */
+  async voteReview(reviewId, userId, vote) {
+    if (!IS_SUPABASE) return { success: true, data: null }
+
+    const existing = await apiClient.get(
+      `/rest/v1/review_votes?review_id=eq.${reviewId}&user_id=eq.${userId}&select=*`,
+    )
+
+    const current = Array.isArray(existing) && existing.length > 0 ? existing[0] : null
+
+    if (current && current.vote === vote) {
+      // Same vote clicked again — remove it.
+      await apiClient.delete(
+        `/rest/v1/review_votes?review_id=eq.${reviewId}&user_id=eq.${userId}`,
+      )
+      return { success: true, data: { vote: null } }
+    }
+
+    if (current) {
+      // Switch vote direction.
+      await apiClient.patch(
+        `/rest/v1/review_votes?review_id=eq.${reviewId}&user_id=eq.${userId}`,
+        { vote },
+      )
+      return { success: true, data: { vote } }
+    }
+
+    await apiClient.post(
+      '/rest/v1/review_votes',
+      { review_id: Number(reviewId), user_id: userId, vote },
+      { headers: { Prefer: 'return=minimal' } },
+    )
+    return { success: true, data: { vote } }
   }
 }
 

@@ -20,7 +20,21 @@ if (!BASE_URL) {
 }
 
 // ---------------------------------------------------------------------------
-// Axios instance
+// Shared request interceptor — attach Supabase headers (apikey & Bearer auth)
+// ---------------------------------------------------------------------------
+const attachAuthHeaders = (config) => {
+  if (IS_SUPABASE && SUPABASE_KEY) {
+    config.headers['apikey'] = SUPABASE_KEY
+    if (!config.headers['Authorization']) {
+      config.headers['Authorization'] = `Bearer ${SUPABASE_KEY}`
+    }
+  }
+  return config
+}
+
+// ---------------------------------------------------------------------------
+// Axios instance — unwraps response.data and normalises errors.
+// Used by every service for normal reads/writes.
 // ---------------------------------------------------------------------------
 const apiClient = axios.create({
   baseURL: BASE_URL,
@@ -30,25 +44,8 @@ const apiClient = axios.create({
   timeout: 10000, // 10 seconds
 })
 
-// ---------------------------------------------------------------------------
-// Request interceptor — attach Supabase headers (apikey & Bearer auth)
-// ---------------------------------------------------------------------------
-apiClient.interceptors.request.use(
-  (config) => {
-    if (IS_SUPABASE && SUPABASE_KEY) {
-      config.headers['apikey'] = SUPABASE_KEY
-      if (!config.headers['Authorization']) {
-        config.headers['Authorization'] = `Bearer ${SUPABASE_KEY}`
-      }
-    }
-    return config
-  },
-  (error) => Promise.reject(error),
-)
+apiClient.interceptors.request.use(attachAuthHeaders, (error) => Promise.reject(error))
 
-// ---------------------------------------------------------------------------
-// Response interceptor — unwrap response and normalise errors
-// ---------------------------------------------------------------------------
 apiClient.interceptors.response.use(
   (response) => response.data,
   (error) => {
@@ -79,4 +76,19 @@ apiClient.interceptors.response.use(
   },
 )
 
-export { apiClient, BASE_URL, SUPABASE_KEY, IS_SUPABASE }
+// ---------------------------------------------------------------------------
+// Raw axios instance — keeps the FULL response (headers, status), unlike
+// apiClient above. Needed to read PostgREST's `Content-Range` header for
+// real server-side pagination totals (`Prefer: count=exact`).
+// ---------------------------------------------------------------------------
+const apiRaw = axios.create({
+  baseURL: BASE_URL,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  timeout: 10000,
+})
+
+apiRaw.interceptors.request.use(attachAuthHeaders, (error) => Promise.reject(error))
+
+export { apiClient, apiRaw, BASE_URL, SUPABASE_KEY, IS_SUPABASE }

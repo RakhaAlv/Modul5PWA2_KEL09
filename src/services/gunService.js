@@ -1,4 +1,4 @@
-import { apiClient, IS_SUPABASE } from '../config/api'
+import { apiClient, apiRaw, IS_SUPABASE } from '../config/api'
 
 // ---------------------------------------------------------------------------
 // Normalizer — standardizes product shape whether received from Supabase
@@ -49,10 +49,35 @@ export const normalizeProduct = (item) => {
     description: item.description || '',
     image_url: item.image_url || item.image || '/guns/pistol.svg',
     image: item.image_url || item.image || '/guns/pistol.svg',
+    archived: Boolean(item.archived),
     ingredients: specsList,
     steps: stepsList,
   }
 }
+
+// ---------------------------------------------------------------------------
+// Query cache — small in-memory TTL cache so repeated reads (pagination,
+// re-visiting the catalog, re-opening a product) don't always hit the
+// network. Cleared automatically whenever data is mutated.
+// ---------------------------------------------------------------------------
+const CACHE_TTL_MS = 30 * 1000
+const cache = new Map()
+
+const cacheGet = (key) => {
+  const hit = cache.get(key)
+  if (!hit) return undefined
+  if (Date.now() - hit.time > CACHE_TTL_MS) {
+    cache.delete(key)
+    return undefined
+  }
+  return hit.value
+}
+
+const cacheSet = (key, value) => {
+  cache.set(key, { value, time: Date.now() })
+}
+
+const clearCache = () => cache.clear()
 
 // ---------------------------------------------------------------------------
 // GunService — wraps backend CRUD endpoints.
@@ -62,10 +87,28 @@ export const normalizeProduct = (item) => {
 class GunService {
   /**
    * Fetch a paginated, filterable list of products.
+   * @param {Object} params
+   * @param {string}  [params.search]
+   * @param {string}  [params.category]   — 'All' or a product type
+   * @param {string}  [params.sort_by]    — 'name' | 'price' | 'created_at'
+   * @param {string}  [params.order]      — 'asc' | 'desc'
+   * @param {number}  [params.page=1]
+   * @param {number}  [params.limit=50]
+   * @param {boolean} [params.archived=false] — fetch archived (soft-deleted) items instead
    */
   async getGuns(params = {}) {
+    const cacheKey = `getGuns:${JSON.stringify(params)}`
+    const cached = cacheGet(cacheKey)
+    if (cached) return cached
+
     if (IS_SUPABASE) {
+      const page = Number(params.page) > 0 ? Number(params.page) : 1
+      const limit = Number(params.limit) > 0 ? Number(params.limit) : 50
+      const offset = (page - 1) * limit
+
       const queryParts = ['select=*']
+
+      queryParts.push(`archived=eq.${params.archived ? 'true' : 'false'}`)
 
       if (params.search) {
         queryParts.push(`name=ilike.*${encodeURIComponent(params.search)}*`)
@@ -82,44 +125,98 @@ class GunService {
         queryParts.push('order=created_at.desc')
       }
 
-      if (params.limit) {
-        queryParts.push(`limit=${params.limit}`)
-      }
+      queryParts.push(`limit=${limit}`)
+      queryParts.push(`offset=${offset}`)
 
       const queryString = queryParts.join('&')
-      const data = await apiClient.get(`/rest/v1/products?${queryString}`)
+
+      const res = await apiRaw.get(`/rest/v1/products?${queryString}`, {
+        headers: { Prefer: 'count=exact' },
+      })
+
+      const data = res.data
       const list = Array.isArray(data) ? data.map(normalizeProduct) : []
 
-      return {
+      // PostgREST returns e.g. "Content-Range: 0-11/42"
+      const contentRange = res.headers?.['content-range']
+      const total = contentRange
+        ? Number(contentRange.split('/')[1]) || list.length
+        : list.length
+
+      const result = {
         success: true,
         data: list,
         pagination: {
-          total: list.length,
-          page: params.page || 1,
-          limit: params.limit || 50,
+          total,
+          page,
+          limit,
+          totalPages: Math.max(1, Math.ceil(total / limit)),
         },
       }
+      cacheSet(cacheKey, result)
+      return result
     }
 
     // Fallback: university REST API
     const clean = Object.fromEntries(
       Object.entries(params).filter(([, v]) => v !== '' && v != null),
     )
-    return apiClient.get('/api/v1/recipes', { params: clean })
+    const result = await apiClient.get('/api/v1/recipes', { params: clean })
+    cacheSet(cacheKey, result)
+    return result
+  }
+
+  /**
+   * Fetch the distinct list of product types/categories, independent of the
+   * current page — used to populate the category filter pills.
+   */
+  async getCategories() {
+    const cacheKey = 'getCategories'
+    const cached = cacheGet(cacheKey)
+    if (cached) return cached
+
+    if (IS_SUPABASE) {
+      try {
+        const data = await apiClient.get(
+          '/rest/v1/products?select=type&archived=eq.false',
+        )
+        const set = new Set()
+        if (Array.isArray(data)) {
+          data.forEach((row) => {
+            if (row.type) set.add(row.type)
+          })
+        }
+        const categories = ['All', ...Array.from(set).sort()]
+        cacheSet(cacheKey, categories)
+        return categories
+      } catch {
+        return ['All']
+      }
+    }
+    return ['All']
   }
 
   /**
    * Fetch a single product by ID.
    */
   async getGunById(id) {
+    const cacheKey = `getGunById:${id}`
+    const cached = cacheGet(cacheKey)
+    if (cached) return cached
+
+    let result
     if (IS_SUPABASE) {
       const data = await apiClient.get(`/rest/v1/products?id=eq.${id}&select=*`)
       if (Array.isArray(data) && data.length > 0) {
-        return { success: true, data: normalizeProduct(data[0]) }
+        result = { success: true, data: normalizeProduct(data[0]) }
+      } else {
+        throw new Error('Hardware item not found.')
       }
-      throw new Error('Hardware item not found.')
+    } else {
+      result = await apiClient.get(`/api/v1/recipes/${id}`)
     }
-    return apiClient.get(`/api/v1/recipes/${id}`)
+    cacheSet(cacheKey, result)
+    return result
   }
 
   /**
@@ -147,9 +244,12 @@ class GunService {
         headers: { Prefer: 'return=representation' },
       })
       const created = Array.isArray(res) ? res[0] : res
+      clearCache()
       return { success: true, data: normalizeProduct(created) }
     }
-    return apiClient.post('/api/v1/recipes', data)
+    const result = await apiClient.post('/api/v1/recipes', data)
+    clearCache()
+    return result
   }
 
   /**
@@ -175,14 +275,18 @@ class GunService {
       if (data.description !== undefined) payload.description = data.description
       if (specsArray !== undefined) payload.specs = specsArray
       if (data.image_url !== undefined) payload.image_url = data.image_url
+      if (data.archived !== undefined) payload.archived = Boolean(data.archived)
 
       const res = await apiClient.patch(`/rest/v1/products?id=eq.${id}`, payload, {
         headers: { Prefer: 'return=representation' },
       })
       const updated = Array.isArray(res) ? res[0] : res
+      clearCache()
       return { success: true, data: normalizeProduct(updated) }
     }
-    return apiClient.put(`/api/v1/recipes/${id}`, data)
+    const result = await apiClient.put(`/api/v1/recipes/${id}`, data)
+    clearCache()
+    return result
   }
 
   /**
@@ -192,19 +296,41 @@ class GunService {
     if (IS_SUPABASE) {
       return this.updateGun(id, data)
     }
-    return apiClient.patch(`/api/v1/recipes/${id}`, data)
+    const result = await apiClient.patch(`/api/v1/recipes/${id}`, data)
+    clearCache()
+    return result
   }
 
   /**
-   * Delete product.
+   * Soft delete — flag the product as archived instead of removing it.
+   * It disappears from the normal catalog but can be restored later.
+   */
+  async archiveGun(id) {
+    return this.updateGun(id, { archived: true })
+  }
+
+  /**
+   * Restore a previously archived product.
+   */
+  async restoreGun(id) {
+    return this.updateGun(id, { archived: false })
+  }
+
+  /**
+   * Permanently delete a product (and, via FK cascade, its reviews,
+   * favorites, extra images and review votes).
    */
   async deleteGun(id) {
     if (IS_SUPABASE) {
       await apiClient.delete(`/rest/v1/products?id=eq.${id}`)
+      clearCache()
       return { success: true }
     }
-    return apiClient.delete(`/api/v1/recipes/${id}`)
+    const result = await apiClient.delete(`/api/v1/recipes/${id}`)
+    clearCache()
+    return result
   }
 }
 
 export default new GunService()
+export { clearCache as clearGunCache }

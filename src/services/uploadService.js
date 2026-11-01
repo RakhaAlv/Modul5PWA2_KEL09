@@ -79,6 +79,20 @@ class UploadService {
 
     return response.data
   }
+
+  /**
+   * Upload several images in parallel.
+   * @param {File[]} files
+   * @returns {Promise<string[]>} the resulting public URLs, in order
+   */
+  async uploadImages(files) {
+    const results = await Promise.all(
+      Array.from(files).map((file) => this.uploadImage(file)),
+    )
+    return results
+      .filter((r) => r.success && r.data?.url)
+      .map((r) => r.data.url)
+  }
 }
 
 export default new UploadService()

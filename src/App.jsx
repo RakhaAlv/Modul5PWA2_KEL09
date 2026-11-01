@@ -1,28 +1,54 @@
-import { useState } from 'react'
+import { useState, lazy, Suspense } from 'react'
+import { Loader } from 'lucide-react'
 import Header from './components/Header.jsx'
 import Footer from './components/Footer.jsx'
-import Catalog from './pages/Catalog.jsx'
-import FavoritesPage from './pages/FavoritesPage.jsx'
-import ProfilePage from './pages/ProfilePage.jsx'
-import CreateGunPage from './pages/CreateGunPage.jsx'
-import EditGunPage from './pages/EditGunPage.jsx'
-import GunDetail from './components/gun/GunDetail.jsx'
-import About from './pages/About.jsx'
-import Contact from './pages/Contact.jsx'
 import PWABadge from './components/PWABadge.jsx'
 import ConfirmModal from './components/modals/ConfirmModal.jsx'
 import SplashScreen from './components/common/SplashScreen.jsx'
-import gunService from './services/gunService.js'
+import gunService from './services/gunService'
 import './App.css'
+
+// ---------------------------------------------------------------------------
+// Lazy-loaded pages — each page's code only downloads when the visitor
+// actually navigates to it, instead of all being bundled into the initial
+// load.
+// ---------------------------------------------------------------------------
+const Catalog = lazy(() => import('./pages/Catalog.jsx'))
+const FavoritesPage = lazy(() => import('./pages/FavoritesPage.jsx'))
+const CartPage = lazy(() => import('./pages/CartPage.jsx'))
+const ProfilePage = lazy(() => import('./pages/ProfilePage.jsx'))
+const EditProfilePage = lazy(() => import('./pages/EditProfilePage.jsx'))
+const CreateGunPage = lazy(() => import('./pages/CreateGunPage.jsx'))
+const EditGunPage = lazy(() => import('./pages/EditGunPage.jsx'))
+const GunDetail = lazy(() => import('./components/gun/GunDetail.jsx'))
+
+const PageFallback = () => (
+  <div className="state-box">
+    <Loader size={28} className="spin" />
+    <p>Loading…</p>
+  </div>
+)
+
+// If this app was opened from a shared product link (?product=123), read it
+// once on startup so the catalog can jump straight into that product's
+// detail view.
+const getInitialProductId = () => {
+  try {
+    return new URLSearchParams(window.location.search).get('product') || null
+  } catch {
+    return null
+  }
+}
 
 function App() {
   const [showSplash, setShowSplash] = useState(true)
   const [tab, setTab] = useState('Catalog')
-  const [mode, setMode] = useState('list') // 'list' | 'create' | 'edit' | 'detail'
+  const [mode, setMode] = useState('list') // 'list' | 'create' | 'edit' | 'detail' | 'editProfile'
   const [selectedGun, setSelectedGun] = useState(null)
   const [editingGun, setEditingGun] = useState(null)
-  const [deleteTarget, setDeleteTarget] = useState(null)
-  const [deleting, setDeleting] = useState(false)
+  const [archiveTarget, setArchiveTarget] = useState(null)
+  const [archiving, setArchiving] = useState(false)
+  const [initialProductId] = useState(getInitialProductId)
 
   // Unified navigation handler
   const handleNavigate = (target, payload) => {
@@ -36,6 +62,9 @@ function App() {
     } else if (target === 'Detail') {
       setSelectedGun(payload)
       setMode('detail')
+      window.scrollTo({ top: 0, behavior: 'smooth' })
+    } else if (target === 'EditProfile') {
+      setMode('editProfile')
       window.scrollTo({ top: 0, behavior: 'smooth' })
     } else {
       // Tab change
@@ -66,84 +95,103 @@ function App() {
       />
 
       <main className="main">
-        {/* Sub-page views */}
-        {mode === 'create' && (
-          <CreateGunPage
-            onBack={handleBackToList}
-            onSuccess={() => {
-              handleBackToList()
-              setTab('Catalog')
-            }}
-          />
-        )}
+        <Suspense fallback={<PageFallback />}>
+          {/* Sub-page views */}
+          {mode === 'create' && (
+            <CreateGunPage
+              onBack={handleBackToList}
+              onSuccess={() => {
+                handleBackToList()
+                setTab('Catalog')
+              }}
+            />
+          )}
 
-        {mode === 'edit' && (
-          <EditGunPage
-            gun={editingGun}
-            gunId={editingGun?.id}
-            onBack={handleBackToList}
-            onSuccess={() => {
-              handleBackToList()
-              setTab('Catalog')
-            }}
-          />
-        )}
+          {mode === 'edit' && (
+            <EditGunPage
+              gun={editingGun}
+              gunId={editingGun?.id}
+              onBack={handleBackToList}
+              onSuccess={() => {
+                handleBackToList()
+                setTab('Catalog')
+              }}
+            />
+          )}
 
-        {mode === 'detail' && selectedGun && (
-          <GunDetail
-            gun={selectedGun}
-            onBack={handleBackToList}
-            onEdit={(g) => handleNavigate('Edit', g)}
-            onDelete={(g) => setDeleteTarget(g)}
-          />
-        )}
+          {mode === 'editProfile' && (
+            <EditProfilePage onBack={() => { setMode('list'); setTab('Profile') }} />
+          )}
 
-        {/* Top-level Tabs */}
-        {mode === 'list' && (
-          <>
-            {tab === 'Catalog' && (
-              <Catalog
-                onNavigate={(destination, payload) => handleNavigate(destination, payload)}
-              />
-            )}
-            {tab === 'Favorites' && (
-              <FavoritesPage
-                onSelectGun={(g) => handleNavigate('Detail', g)}
-                onNavigateCatalog={() => setTab('Catalog')}
-              />
-            )}
-            {tab === 'Profile' && (
-              <ProfilePage onReplaySplash={() => setShowSplash(true)} />
-            )}
-            {tab === 'About' && <About />}
-            {tab === 'Contact' && <Contact />}
-          </>
-        )}
+          {mode === 'detail' && selectedGun && (
+            <GunDetail
+              gun={selectedGun}
+              onBack={handleBackToList}
+              onEdit={(g) => handleNavigate('Edit', g)}
+              onArchive={(g) => setArchiveTarget(g)}
+            />
+          )}
+
+          {/* Top-level Tabs */}
+          {mode === 'list' && (
+            <>
+              {tab === 'Catalog' && (
+                <Catalog
+                  initialProductId={initialProductId}
+                  onNavigate={(destination, payload) => handleNavigate(destination, payload)}
+                />
+              )}
+              {tab === 'Favorites' && (
+                <FavoritesPage
+                  onSelectGun={(g) => handleNavigate('Detail', g)}
+                  onNavigateCatalog={() => setTab('Catalog')}
+                />
+              )}
+              {tab === 'Cart' && (
+                <CartPage onNavigateCatalog={() => setTab('Catalog')} />
+              )}
+              {tab === 'Profile' && (
+                <ProfilePage
+                  onReplaySplash={() => setShowSplash(true)}
+                  onEditProfile={() => handleNavigate('EditProfile')}
+                  onResumeDraft={(target) => {
+                    if (target === 'create') {
+                      handleNavigate('Create')
+                    } else {
+                      handleNavigate('Edit', { id: target })
+                    }
+                  }}
+                />
+              )}
+            </>
+          )}
+        </Suspense>
       </main>
 
-      {/* Global Delete Confirmation */}
+      {/* Global Archive (soft delete) Confirmation — used by the Favorites
+          detail flow; Catalog manages its own archive/restore/delete modals. */}
       <ConfirmModal
-        open={Boolean(deleteTarget)}
-        title="Delete Hardware Record"
-        message={`Are you sure you want to delete "${deleteTarget?.name}"? This action cannot be undone.`}
-        confirmLabel="Delete"
+        open={Boolean(archiveTarget)}
+        title="Archive Hardware Record"
+        message={`Archive "${archiveTarget?.name}"? It will be hidden from the catalog but can be restored later from Catalog → View Archived.`}
+        confirmLabel="Archive"
         danger
-        loading={deleting}
+        loading={archiving}
         onConfirm={async () => {
-          if (!deleteTarget) return
+          if (!archiveTarget) return
           try {
-            setDeleting(true)
-            await gunService.deleteGun(deleteTarget.id)
-            setDeleteTarget(null)
+            setArchiving(true)
+            await gunService.archiveGun(archiveTarget.id)
+            setArchiveTarget(null)
             handleBackToList()
             setTab('Catalog')
           } catch (err) {
-            alert(err.message || 'Failed to delete record.')
+            alert(err.message || 'Failed to archive record.')
           } finally {
-            setDeleting(false)
+            setArchiving(false)
           }
         }}
-        onCancel={() => setDeleteTarget(null)}
+        onCancel={() => setArchiveTarget(null)}
       />
 
       <PWABadge />

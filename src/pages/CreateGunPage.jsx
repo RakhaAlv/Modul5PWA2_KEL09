@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 import gunService from '../services/gunService'
 import uploadService from '../services/uploadService'
+import productImageService from '../services/productImageService'
 import {
   saveDraft,
   loadDraft,
@@ -57,6 +58,15 @@ export default function CreateGunPage({ onBack, onSuccess }) {
     'Verify firearm is completely unloaded and point in safe direction.',
     'Disassemble slide assembly from receiver frame for routine maintenance.',
   ])
+
+  // Extra gallery images (beyond the primary image above)
+  const [extraImageFiles, setExtraImageFiles] = useState([])
+  const handleExtraImagesChange = (e) => {
+    setExtraImageFiles((prev) => [...prev, ...Array.from(e.target.files || [])])
+  }
+  const removeExtraImage = (idx) => {
+    setExtraImageFiles((prev) => prev.filter((_, i) => i !== idx))
+  }
 
   const [uploading, setUploading] = useState(false)
   const [creating, setCreating] = useState(false)
@@ -275,6 +285,15 @@ export default function CreateGunPage({ onBack, onSuccess }) {
       setCreating(true)
       const response = await gunService.createGun(payload)
       if (response.success || response.data) {
+        const newId = response.data?.id
+        if (newId && extraImageFiles.length > 0) {
+          try {
+            const urls = await uploadService.uploadImages(extraImageFiles)
+            if (urls.length > 0) await productImageService.addImages(newId, urls)
+          } catch {
+            /* best-effort — primary product was already saved */
+          }
+        }
         deleteDraft('create')
         if (onSuccess) {
           onSuccess(response.data)
@@ -652,6 +671,36 @@ export default function CreateGunPage({ onBack, onSuccess }) {
                 </div>
               ))}
             </div>
+          </div>
+
+          {/* Extra gallery images */}
+          <div className="form-fieldset">
+            <div className="fieldset-header">
+              <label className="form-label">Additional Gallery Images (optional)</label>
+              <label htmlFor="extra-images-input" className="btn btn--outline btn--sm">
+                <Plus size={14} /> Add Images
+              </label>
+              <input
+                id="extra-images-input"
+                type="file"
+                accept="image/jpeg,image/jpg,image/png,image/webp"
+                multiple
+                onChange={handleExtraImagesChange}
+                className="hidden-file-input"
+              />
+            </div>
+            {extraImageFiles.length > 0 && (
+              <div className="extra-image-grid">
+                {extraImageFiles.map((file, i) => (
+                  <div key={file.name + i} className="extra-image-thumb">
+                    <img src={URL.createObjectURL(file)} alt={file.name} />
+                    <button type="button" className="preview-remove-btn" onClick={() => removeExtraImage(i)}>
+                      <X size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Featured checkbox */}
